@@ -1,0 +1,38 @@
+[
+  {
+    "name": "clear-fit-portal-modernization",
+    "note": "SYNTHETIC. Should be pursue.",
+    "expect": ["pursue"],
+    "opp": { "noticeId": "e1", "title": "Benefits Intake Portal Modernization", "agency": "Dept of Veterans Affairs", "noticeType": "Solicitation", "solicitationNumber": "EVAL-001", "naics": "541511", "setAside": "", "deadline": "2030-03-15T17:00:00-05:00", "location": "Washington, DC", "uiLink": "" },
+    "text": "The Department of Veterans Affairs seeks a contractor to replace the legacy Benefits Intake system with a cloud-native web application. The contractor shall deliver a citizen-facing portal meeting WCAG 2.1 AA accessibility, integrate with the existing claims database through REST APIs, and migrate roughly 4 million historical records. Period of performance is 18 months. Proposals are due March 15, 2030 at 5:00 PM Eastern. This acquisition is not set aside. No security clearance is required; a public trust background check applies to all personnel."
+  },
+  {
+    "name": "hardware-reseller",
+    "note": "SYNTHETIC. Pure hardware buy, should be skip.",
+    "expect": ["skip"],
+    "opp": { "noticeId": "e2", "title": "Purchase of 300 Laptop Computers", "agency": "Dept of Agriculture", "noticeType": "Solicitation", "solicitationNumber": "EVAL-002", "naics": "541519", "setAside": "Total Small Business Set-Aside", "deadline": "2030-02-01T12:00:00-05:00", "location": "Kansas City, MO", "uiLink": "" },
+    "text": "The Government requires the purchase and delivery of 300 laptop computers, each with 16 GB RAM, 512 GB solid state storage, and a three-year manufacturer warranty. Brand name or equal. Delivery to the Kansas City warehouse within 45 days of award. This is a firm fixed price purchase of commercial off-the-shelf equipment. Offers are due February 1, 2030."
+  },
+  {
+    "name": "clearance-required",
+    "note": "SYNTHETIC. Software work, but a TS/SCI clearance is mandatory; should not be pursue.",
+    "expect": ["review", "skip"],
+    "opp": { "noticeId": "e3", "title": "Mission Systems Software Sustainment", "agency": "Dept of Defense > Army", "noticeType": "Combined Synopsis/Solicitation", "solicitationNumber": "EVAL-003", "naics": "541512", "setAside": "", "deadline": "2030-04-02T14:00:00-04:00", "location": "Fort Meade, MD", "uiLink": "" },
+    "text": "The contractor shall provide software development and sustainment for classified mission systems. All personnel must hold an active TS/SCI clearance with polygraph at the time of proposal submission. Work will be performed on-site in a SCIF at Fort Meade. The system is written primarily in Ada and C++. Proposals are due April 2, 2030."
+  },
+  {
+    "name": "thin-source",
+    "note": "SYNTHETIC. The description is a stub; the model must not be confident.",
+    "expect": ["review", "skip"],
+    "opp": { "noticeId": "e4", "title": "Digital Services Support", "agency": "Dept of Commerce", "noticeType": "Sources Sought", "solicitationNumber": "EVAL-004", "naics": "541511", "setAside": "", "deadline": null, "location": "", "uiLink": "" },
+    "text": "See attached sources sought document."
+  },
+  {
+    "name": "unstated-deadline-trap",
+    "note": "SYNTHETIC. No deadline appears in the text; the model should answer null, not invent one.",
+    "expect": ["pursue", "review"],
+    "mustBeNull": "deadline_stated",
+    "opp": { "noticeId": "e5", "title": "Case Management System Replacement", "agency": "Dept of Justice", "noticeType": "Presolicitation", "solicitationNumber": "EVAL-005", "naics": "541511", "setAside": "", "deadline": null, "location": "Washington, DC", "uiLink": "" },
+    "text": "The Department of Justice intends to replace its legacy case management system with a modern, configurable web-based platform. The platform shall support document intake, automated routing, role-based access, and reporting dashboards. A formal solicitation will be posted at a later date; interested vendors should monitor this notice. Anticipated period of performance is two years with three option years."
+  }
+]

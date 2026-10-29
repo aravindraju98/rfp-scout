@@ -1,0 +1,401 @@
+{
+  "name": "RFP Scout",
+  "nodes": [
+    {
+      "id": "b2000000-0000-4000-8000-000000000001",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * 1-5"
+            }
+          ]
+        }
+      },
+      "name": "Weekday mornings",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000002",
+      "parameters": {},
+      "name": "Run now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000003",
+      "parameters": {
+        "jsCode": "// n8n Code node (Run Once for All Items): one SAM.gov search per NAICS code.\n// Edit NAICS_CODES / LOOKBACK_DAYS to change what the scout watches.\nconst NAICS_CODES = [\n  '541511', // Custom computer programming services\n  '541512', // Computer systems design services\n  '541519', // Other computer related services\n  '518210', // Data processing, hosting, and related services\n];\nconst LOOKBACK_DAYS = 3; // overlaps the daily schedule so a missed day is still covered\n\nconst fmt = (d) =>\n  `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()}`;\n\nconst to = new Date();\nconst from = new Date(to.getTime() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000);\n\nreturn NAICS_CODES.map((ncode) => ({\n  json: {\n    url: 'https://api.sam.gov/opportunities/v2/search',\n    ncode,\n    postedFrom: fmt(from),\n    postedTo: fmt(to),\n  },\n}));\n"
+      },
+      "name": "Build query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        100
+      ]
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000004",
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "url": "={{ $json.url }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "ncode",
+              "value": "={{ $json.ncode }}"
+            },
+            {
+              "name": "postedFrom",
+              "value": "={{ $json.postedFrom }}"
+            },
+            {
+              "name": "postedTo",
+              "value": "={{ $json.postedTo }}"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "name": "Search SAM.gov",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000005",
+      "parameters": {
+        "jsCode": "// n8n Code node (Run Once for All Items): flatten SAM.gov search responses into one\n// item per opportunity worth analysing. Read-only against the \"seen\" list: a notice is\n// only marked seen after it has been analysed (see validate.js), so a failed run retries.\nconst KEEP_TYPES = new Set([\n  'Solicitation',\n  'Combined Synopsis/Solicitation',\n  'Presolicitation',\n  'Sources Sought',\n]);\nconst MAX_PER_RUN = 25; // bounds LLM spend on a busy day; the rest are picked up next run\n\nconst seen = new Set($getWorkflowStaticData('global').analyzedNoticeIds || []);\nconst now = Date.now();\nconst byId = new Map();\n\nfor (const item of $input.all()) {\n  for (const o of item.json.opportunitiesData || []) {\n    if (!o.noticeId || byId.has(o.noticeId) || seen.has(o.noticeId)) continue;\n    if (o.active !== 'Yes' || !KEEP_TYPES.has(o.type)) continue;\n    const deadline = o.responseDeadLine || null;\n    if (deadline && Date.parse(deadline) < now) continue;\n\n    const place = o.placeOfPerformance || {};\n    byId.set(o.noticeId, {\n      noticeId: o.noticeId,\n      title: o.title || '(untitled)',\n      solicitationNumber: o.solicitationNumber || '',\n      agency: (o.fullParentPathName || '').split('.').filter(Boolean).join(' > '),\n      postedDate: o.postedDate || '',\n      noticeType: o.type,\n      deadline,\n      naics: o.naicsCode || '',\n      setAside: o.typeOfSetAsideDescription || '',\n      location: [place.city && place.city.name, place.state && place.state.code].filter(Boolean).join(', '),\n      uiLink: o.uiLink || '',\n      descriptionUrl: typeof o.description === 'string' && o.description.startsWith('http') ? o.description : '',\n    });\n  }\n}\n\nreturn [...byId.values()]\n  .sort((a, b) => b.postedDate.localeCompare(a.postedDate))\n  .slice(0, MAX_PER_RUN)\n  .map((json) => ({ json }));\n"
+      },
+      "name": "Normalize & dedupe",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        100
+      ]
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000006",
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "url": "={{ $json.descriptionUrl }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "name": "Fetch description",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000007",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// n8n Code node (Run Once for Each Item): turn one opportunity plus its fetched\n// description into an Anthropic Messages request. The model must answer through a\n// forced tool call, so the output is structured JSON rather than prose to be parsed.\n// eval/run-eval.js loads this same file, so the eval always tests the production prompt.\nconst MODEL = 'claude-sonnet-5-5';\nconst MAX_SOURCE_CHARS = 24000;\n\n// Who \"we\" are. Change this and the scoring changes with it.\nconst COMPANY_PROFILE = `We are a software vendor that replaces legacy federal systems with modern web\napplications: citizen-facing portals, benefits and case-management systems, ticketing and\nmarketplace platforms, and AI-assisted document workflows. We are strongest at custom software\ndevelopment, modernization, system integration, and data/analytics work. We are not a hardware\nreseller, staffing agency, or facilities contractor. Contracts needing an active security clearance\nare out of reach for us unless the document says otherwise.`;\n\nconst SYSTEM = `You do the first-pass read of a US federal procurement notice for a bid team.\nUse ONLY the document and metadata provided. If something is not stated, answer null. Never guess a\ndeadline, set-aside, or requirement. Every requirement you list must carry a short evidence_quote\ncopied VERBATIM from the document. A bid team will act on your recommendation, so be conservative:\nprefer \"review\" over \"pursue\" when the document is thin or ambiguous.\n\nCompany profile:\n${COMPANY_PROFILE}`;\n\nconst TOOL = {\n  name: 'record_analysis',\n  description: 'Record the first-pass analysis of a procurement notice.',\n  input_schema: {\n    type: 'object',\n    required: ['summary', 'scope_type', 'key_requirements', 'fit_score', 'recommendation', 'rationale', 'risks'],\n    properties: {\n      summary: { type: 'string', description: 'What the agency wants, in at most 50 words.' },\n      scope_type: {\n        type: 'string',\n        enum: ['software_development', 'modernization', 'integration', 'data_analytics', 'ai_ml', 'infrastructure', 'staffing', 'hardware', 'other'],\n      },\n      key_requirements: {\n        type: 'array',\n        maxItems: 6,\n        items: {\n          type: 'object',\n          required: ['requirement', 'evidence_quote'],\n          properties: {\n            requirement: { type: 'string' },\n            evidence_quote: { type: 'string', description: 'Verbatim excerpt from the document supporting this requirement.' },\n          },\n        },\n      },\n      deadline_stated: { type: ['string', 'null'], description: 'Response deadline as YYYY-MM-DD if the document states one, else null.' },\n      set_aside: { type: ['string', 'null'] },\n      clearance_required: { type: ['boolean', 'null'] },\n      fit_score: { type: 'integer', minimum: 0, maximum: 100 },\n      recommendation: { type: 'string', enum: ['pursue', 'review', 'skip'] },\n      rationale: { type: 'string', description: 'Two sentences on why, referring to the company profile.' },\n      risks: { type: 'array', maxItems: 4, items: { type: 'string' } },\n    },\n  },\n};\n\nconst opp = $('Normalize & dedupe').item.json;\nconst raw = String($json.description ?? $json.data ?? '');\n\nconst text = raw\n  .replace(/<(script|style)[\\s\\S]*?<\\/\\1>/gi, ' ')\n  .replace(/<br\\s*\\/?>|<\\/(p|div|li|tr|h\\d)>/gi, '\\n')\n  .replace(/<[^>]+>/g, ' ')\n  .replace(/&nbsp;/g, ' ')\n  .replace(/&amp;/g, '&')\n  .replace(/&lt;/g, '<')\n  .replace(/&gt;/g, '>')\n  .replace(/&quot;/g, '\"')\n  .replace(/&#39;/g, \"'\")\n  .replace(/[ \\t]+/g, ' ')\n  .replace(/\\n\\s*\\n+/g, '\\n')\n  .trim();\n\nconst truncated = text.length > MAX_SOURCE_CHARS;\nconst source_text = truncated ? text.slice(0, MAX_SOURCE_CHARS) : text;\nconst thin_source = source_text.length < 300;\n\nconst metadata = [\n  `Title: ${opp.title}`,\n  `Agency: ${opp.agency}`,\n  `Notice type: ${opp.noticeType}`,\n  `Solicitation number: ${opp.solicitationNumber}`,\n  `NAICS: ${opp.naics}`,\n  `Set-aside (from metadata): ${opp.setAside || 'none listed'}`,\n  `Response deadline (from metadata): ${opp.deadline || 'none listed'}`,\n  `Place of performance: ${opp.location || 'not listed'}`,\n].join('\\n');\n\nconst content =\n  `<metadata>\\n${metadata}\\n</metadata>\\n\\n<document>\\n${source_text || '(no description text was available)'}\\n</document>`;\n\nreturn {\n  json: {\n    opp,\n    source_text,\n    truncated,\n    thin_source,\n    request: {\n      model: MODEL,\n      max_tokens: 1500,\n      system: SYSTEM,\n      tools: [TOOL],\n      tool_choice: { type: 'tool', name: 'record_analysis' },\n      messages: [{ role: 'user', content }],\n    },\n  },\n};\n"
+      },
+      "name": "Build prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        100
+      ]
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000008",
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "name": "Analyse with Claude",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000009",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// n8n Code node (Run Once for Each Item): never trust the model's output as-is.\n// Checks the schema, verifies every evidence quote actually appears in the source\n// document, cross-checks the deadline against SAM.gov metadata, and downgrades\n// anything it cannot stand behind. Anything doubtful is flagged needs_review\n// instead of being silently trusted or silently dropped.\nconst SCOPES = ['software_development', 'modernization', 'integration', 'data_analytics', 'ai_ml', 'infrastructure', 'staffing', 'hardware', 'other'];\nconst RECS = ['pursue', 'review', 'skip'];\nconst MAX_REMEMBERED = 5000;\n\nconst ctx = $('Build prompt').item.json;\nconst opp = ctx.opp;\nconst reasons = [];\n\nconst norm = (s) => String(s).toLowerCase().replace(/\\s+/g, ' ').trim();\nconst haystack = norm(ctx.source_text);\n\nconst block = ($json.content || []).find((b) => b.type === 'tool_use' && b.name === 'record_analysis');\nlet a = block ? block.input : null;\nif (!a) reasons.push('llm_call_failed');\nif ($json.stop_reason === 'max_tokens') reasons.push('output_truncated');\n\nlet requirements = [];\nif (a) {\n  const bad = [];\n  if (typeof a.summary !== 'string') bad.push('summary');\n  if (!SCOPES.includes(a.scope_type)) bad.push('scope_type');\n  if (!Number.isInteger(a.fit_score) || a.fit_score < 0 || a.fit_score > 100) bad.push('fit_score');\n  if (!RECS.includes(a.recommendation)) bad.push('recommendation');\n  if (typeof a.rationale !== 'string') bad.push('rationale');\n  if (!Array.isArray(a.key_requirements)) bad.push('key_requirements');\n  if (bad.length) {\n    reasons.push(`schema_invalid:${bad.join('+')}`);\n    a = null;\n  }\n}\n\nif (a) {\n  // Grounding check: a quote that is not in the document means the model made it up.\n  let ungrounded = 0;\n  for (const r of a.key_requirements) {\n    const quote = r && typeof r.evidence_quote === 'string' ? norm(r.evidence_quote) : '';\n    if (quote.length >= 8 && haystack.includes(quote)) requirements.push(r.requirement);\n    else ungrounded += 1;\n  }\n  if (ungrounded) reasons.push(`ungrounded_quotes:${ungrounded}`);\n\n  if (ctx.thin_source) {\n    reasons.push('thin_source');\n    a.fit_score = Math.min(a.fit_score, 60);\n    if (a.recommendation === 'pursue') a.recommendation = 'review';\n  }\n  if (ungrounded && a.recommendation === 'pursue') a.recommendation = 'review';\n  if (ctx.truncated) reasons.push('document_truncated');\n  if (a.clearance_required === true) reasons.push('clearance_required');\n}\n\n// Metadata from SAM.gov is authoritative for the deadline; the model only fills gaps.\nlet deadline = opp.deadline ? opp.deadline.slice(0, 10) : '';\nif (a && a.deadline_stated) {\n  if (!deadline) deadline = a.deadline_stated;\n  else if (deadline !== a.deadline_stated) reasons.push('deadline_mismatch');\n}\n\n// Only remember a notice once it was actually analysed, so failed runs retry it.\nif (a) {\n  const store = $getWorkflowStaticData('global');\n  store.analyzedNoticeIds = [...(store.analyzedNoticeIds || []), opp.noticeId].slice(-MAX_REMEMBERED);\n}\n\nreturn {\n  json: {\n    notice_id: opp.noticeId,\n    title: opp.title,\n    agency: opp.agency,\n    solicitation_number: opp.solicitationNumber,\n    posted: opp.postedDate,\n    deadline,\n    naics: opp.naics,\n    set_aside: (a && a.set_aside) || opp.setAside || '',\n    scope_type: a ? a.scope_type : '',\n    fit_score: a ? a.fit_score : '',\n    recommendation: a ? a.recommendation : 'review',\n    needs_review: reasons.length > 0,\n    review_reasons: reasons.join('; '),\n    summary: a ? a.summary : '',\n    requirements: requirements.join(' | '),\n    rationale: a ? a.rationale : '',\n    risks: a && Array.isArray(a.risks) ? a.risks.join(' | ') : '',\n    url: opp.uiLink,\n    analyzed_at: new Date().toISOString(),\n  },\n};\n"
+      },
+      "name": "Validate output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        100
+      ]
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000010",
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Opportunities",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "name": "Log to tracking sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2080,
+        0
+      ]
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000011",
+      "parameters": {
+        "jsCode": "// n8n Code node (Run Once for All Items): one email per run, best bids first.\n// Emits nothing when no opportunity needs a human, so quiet days send no email.\nconst MIN_REVIEW_SCORE = 60;\n\nconst esc = (s) => String(s ?? '').replace(/[&<>\"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]));\nconst rows = $input.all().map((i) => i.json);\n\nconst score = (r) => (typeof r.fit_score === 'number' ? r.fit_score : -1);\nconst pursue = rows.filter((r) => r.recommendation === 'pursue').sort((a, b) => score(b) - score(a));\nconst maybe = rows\n  .filter((r) => r.recommendation === 'review' && !r.needs_review && score(r) >= MIN_REVIEW_SCORE)\n  .sort((a, b) => score(b) - score(a));\nconst flagged = rows.filter((r) => r.needs_review && r.recommendation !== 'skip' && !pursue.includes(r) && !maybe.includes(r));\n\nif (pursue.length + maybe.length + flagged.length === 0) return [];\n\nconst item = (r) =>\n  `<li><a href=\"${esc(r.url)}\">${esc(r.title)}</a> &mdash; ${esc(r.agency)}` +\n  `${r.fit_score !== '' ? ` <b>[${esc(r.fit_score)}]</b>` : ''}` +\n  `${r.deadline ? `, due ${esc(r.deadline)}` : ''}<br>${esc(r.summary)}` +\n  `${r.needs_review ? `<br><i>Check before trusting: ${esc(r.review_reasons)}</i>` : ''}</li>`;\n\nconst section = (heading, list) => (list.length ? `<h3>${heading} (${list.length})</h3><ul>${list.map(item).join('')}</ul>` : '');\n\nconst html =\n  section('Pursue', pursue) +\n  section('Worth a look', maybe) +\n  section('Needs a human (model output could not be fully verified)', flagged) +\n  `<p><small>${rows.length} notices analysed. Every row is logged in the tracking sheet.</small></p>`;\n\nconst total = pursue.length + maybe.length + flagged.length;\nreturn [{ json: { subject: `RFP Scout: ${pursue.length} to pursue, ${total - pursue.length} to check`, html } }];\n"
+      },
+      "name": "Build digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        200
+      ]
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000012",
+      "parameters": {
+        "sendTo": "aravindraju98@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "name": "Email digest",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2340,
+        200
+      ]
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000013",
+      "parameters": {
+        "content": "## RFP Scout\nFinds new federal software notices, reads each one, and tells the bid team which are worth chasing.\n\n**Credentials to attach:** SAM.gov API key (query auth, param `api_key`), Anthropic key (header auth, `x-api-key`), Google Sheets, Gmail.",
+        "width": 520,
+        "height": 180
+      },
+      "name": "Note: overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -260
+      ]
+    },
+    {
+      "id": "b2000000-0000-4000-8000-000000000014",
+      "parameters": {
+        "content": "## Why the validation step exists\nThe model answers through a forced tool call, then **Validate output** checks the schema, confirms every evidence quote really appears in the document, cross-checks the deadline against SAM.gov, and downgrades anything doubtful to *needs review*. A notice is only marked seen after a successful analysis, so failures retry on the next run.",
+        "width": 560,
+        "height": 200
+      },
+      "name": "Note: validation",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        -260
+      ]
+    }
+  ],
+  "connections": {
+    "Weekday mornings": {
+      "main": [
+        [
+          {
+            "node": "Build query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run now": {
+      "main": [
+        [
+          {
+            "node": "Build query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build query": {
+      "main": [
+        [
+          {
+            "node": "Search SAM.gov",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search SAM.gov": {
+      "main": [
+        [
+          {
+            "node": "Normalize & dedupe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize & dedupe": {
+      "main": [
+        [
+          {
+            "node": "Fetch description",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch description": {
+      "main": [
+        [
+          {
+            "node": "Build prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build prompt": {
+      "main": [
+        [
+          {
+            "node": "Analyse with Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyse with Claude": {
+      "main": [
+        [
+          {
+            "node": "Validate output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate output": {
+      "main": [
+        [
+          {
+            "node": "Log to tracking sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build digest": {
+      "main": [
+        [
+          {
+            "node": "Email digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
